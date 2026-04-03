@@ -4,7 +4,7 @@ GEMM Log-Scale Sweep Benchmark
 - M, K, N을 로그 스케일로 보간하며 GEMM 성능을 측정
 - FLOPs 증가율이 매 스텝 균등하게 유지됨
 """
-
+##테ㅛ트
 import torch
 import torch.nn as nn
 import time
