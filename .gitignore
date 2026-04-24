@@ -1,2 +1,6 @@
 pytorch_env/
 rc_env/
+distributed/
+results/
+coded/
+.vscode
