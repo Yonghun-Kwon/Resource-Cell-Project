@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytorch_env/Scripts/pip list:*)",
+      "Bash(\"c:/Users/Kwon/Desktop/Resource-Cell-Project/pytorch_env/Scripts/pip.exe\" list:*)"
+    ]
+  }
+}
