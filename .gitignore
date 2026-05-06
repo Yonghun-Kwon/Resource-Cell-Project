@@ -3,5 +3,5 @@ rc_env/
 distributed/
 results/
 coded/
-.vscode
-.claude
+.vscode/
+.claude/
