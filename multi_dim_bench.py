@@ -20,7 +20,7 @@ import numpy as np
 # Config
 # ─────────────────────────────────────────────
 WARMUP_RUNS = 5
-MEASURE_RUNS = 20
+MEASURE_RUNS = 30
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -64,9 +64,14 @@ def measure_latency(fn, warmup=WARMUP_RUNS, runs=MEASURE_RUNS) -> float:
 # ─────────────────────────────────────────────
 GEMM_SIZES = [
     (64,  64,  64),
+    (96,  96,  96),
     (128, 128, 128),
+    (160, 160, 160),
+    (192, 192, 192),
     (256, 256, 256),
-    (512, 512, 512),
+    (320, 320, 320),
+    (448, 448, 448),
+    (576, 576, 576),
     (768, 768, 768),
 ]
 
@@ -105,10 +110,15 @@ def run_gemm(dtype: torch.dtype):
 # 2. Convolution Benchmark
 # ─────────────────────────────────────────────
 CONV_CONFIGS = [
-    (1, 16,  32,  32, 3),
-    (1, 32,  64,  64, 3),
-    (1, 64,  64,  64, 3),
-    (1, 128, 64,  64, 3),
+    (1, 16,  32,  32,  3),
+    (1, 24,  48,  48,  3),
+    (1, 32,  48,  48,  3),
+    (1, 32,  64,  64,  3),
+    (1, 48,  64,  64,  3),
+    (1, 64,  64,  64,  3),
+    (1, 64,  80,  80,  3),
+    (1, 64,  96,  96,  3),
+    (1, 96,  112, 112, 3),
     (1, 128, 128, 128, 3),
 ]
 
@@ -149,10 +159,15 @@ def run_conv(dtype: torch.dtype):
 # 3. Depthwise Convolution Benchmark
 # ─────────────────────────────────────────────
 DW_CONFIGS = [
-    (1, 16,  32,  32, 3),
-    (1, 32,  64,  64, 3),
-    (1, 64,  64,  64, 3),
-    (1, 128, 64,  64, 3),
+    (1, 16,  32,  32,  3),
+    (1, 24,  48,  48,  3),
+    (1, 32,  48,  48,  3),
+    (1, 32,  64,  64,  3),
+    (1, 48,  64,  64,  3),
+    (1, 64,  64,  64,  3),
+    (1, 64,  80,  80,  3),
+    (1, 64,  96,  96,  3),
+    (1, 96,  112, 112, 3),
     (1, 128, 128, 128, 3),
 ]
 
@@ -188,9 +203,14 @@ def run_depthwise(dtype: torch.dtype):
 # ─────────────────────────────────────────────
 EW_SIZES = [
     1024,
+    1024*2,
+    1024*4,
+    1024*8,
     1024*16,
+    1024*32,
     1024*64,
     1024*128,
+    1024*192,
     1024*256,
 ]
 
@@ -226,8 +246,13 @@ def run_elementwise(dtype: torch.dtype):
 # ─────────────────────────────────────────────
 ATTN_CONFIGS = [
     (1, 1,  64,  32),
+    (1, 1,  128, 64),
     (1, 2,  128, 64),
+    (1, 2,  256, 64),
     (1, 4,  256, 64),
+    (1, 4,  384, 64),
+    (1, 8,  256, 64),
+    (1, 8,  384, 64),
     (1, 8,  512, 64),
     (1, 16, 512, 64),
 ]
@@ -265,19 +290,6 @@ def run_attention(dtype: torch.dtype):
     return results
 
 # ─────────────────────────────────────────────
-# Regression fit: linear fit on log-log for OI vs Throughput
-# ─────────────────────────────────────────────
-def regression(results: List[BenchResult]):
-    ois   = np.array([r.oi  for r in results])
-    tputs = np.array([r.throughput_gflops for r in results])
-    # log-log linear regression
-    with np.errstate(divide='ignore'):
-        log_oi   = np.log10(np.maximum(ois, 1e-9))
-        log_tput = np.log10(np.maximum(tputs, 1e-9))
-    slope, intercept = np.polyfit(log_oi, log_tput, 1)
-    return slope, intercept
-
-# ─────────────────────────────────────────────
 # Save CSV
 # ─────────────────────────────────────────────
 def save_csv(all_results: List[BenchResult], path: str):
@@ -290,6 +302,60 @@ def save_csv(all_results: List[BenchResult], path: str):
         for r in all_results:
             writer.writerow(r.__dict__)
     print(f"\n✅ CSV saved → {path}")
+
+# ─────────────────────────────────────────────
+# Regression Model: OI → Throughput (log-log linear)
+# ─────────────────────────────────────────────
+def build_oi_regression(all_results: List[BenchResult]):
+    """
+    log10(Tput) = slope * log10(OI) + intercept
+    Returns (slope, intercept, r2).
+    """
+    ois   = np.array([r.oi                for r in all_results])
+    tputs = np.array([r.throughput_gflops for r in all_results])
+    with np.errstate(divide="ignore"):
+        log_oi   = np.log10(np.maximum(ois,   1e-9))
+        log_tput = np.log10(np.maximum(tputs, 1e-9))
+    slope, intercept = np.polyfit(log_oi, log_tput, 1)
+
+    log_pred = slope * log_oi + intercept
+    ss_res = np.sum((log_tput - log_pred) ** 2)
+    ss_tot = np.sum((log_tput - log_tput.mean()) ** 2)
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return slope, intercept, r2
+
+def predict_throughput(oi: float, slope: float, intercept: float) -> float:
+    return 10 ** (slope * math.log10(max(oi, 1e-9)) + intercept)
+
+def save_regression_csv(all_results: List[BenchResult], path: str):
+    benchmarks = ["GEMM", "Convolution", "Depthwise", "Elementwise", "Attention"]
+    rows = []
+    for bench in benchmarks:
+        for prec in ["Float32", "Int8"]:
+            sub = [r for r in all_results if r.benchmark == bench and r.precision == prec]
+            if len(sub) < 2:
+                continue
+            slope, intercept, r2 = build_oi_regression(sub)
+            avg_oi     = float(np.mean([r.oi for r in sub]))
+            actual_avg = float(np.mean([r.throughput_gflops for r in sub]))
+            pred       = predict_throughput(avg_oi, slope, intercept)
+            err_pct    = (pred - actual_avg) / actual_avg * 100
+            rows.append({
+                "benchmark":        bench,
+                "precision":        prec,
+                "slope":            round(slope, 6),
+                "intercept":        round(intercept, 6),
+                "r2":               round(r2, 6),
+                "avg_oi":           round(avg_oi, 6),
+                "pred_tput_gflops": round(pred, 6),
+                "actual_tput_gflops": round(actual_avg, 6),
+                "error_pct":        round(err_pct, 4),
+            })
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"✅ Regression CSV saved → {path}")
 
 # ─────────────────────────────────────────────
 # Plot: Roofline-style OI vs Throughput per benchmark
@@ -308,58 +374,72 @@ def plot_results(all_results: List[BenchResult], save_path: str):
 
     fig = plt.figure(figsize=(18, 14))
     fig.patch.set_facecolor("#0f0f1a")
-    fig.suptitle("PyTorch CPU Benchmark — OI vs Throughput (Roofline)",
+    fig.suptitle("PyTorch CPU Benchmark — Throughput & OI per Step",
                  color="white", fontsize=16, fontweight="bold", y=0.98)
 
     gs = gridspec.GridSpec(len(benchmarks), len(precisions),
-                           figure=fig, hspace=0.5, wspace=0.35)
+                           figure=fig, hspace=0.55, wspace=0.45)
 
     for bi, bench in enumerate(benchmarks):
         for pi, prec in enumerate(precisions):
             ax = fig.add_subplot(gs[bi, pi])
             ax.set_facecolor("#1a1a2e")
 
-            subset = [r for r in all_results if r.benchmark == bench and r.precision == prec]
+            subset = sorted(
+                [r for r in all_results if r.benchmark == bench and r.precision == prec],
+                key=lambda r: r.step
+            )
             if not subset:
                 ax.text(0.5, 0.5, "N/A", color="gray", ha="center", va="center",
                         transform=ax.transAxes)
                 continue
 
-            ois   = [r.oi for r in subset]
-            tputs = [r.throughput_gflops for r in subset]
             steps = [r.step for r in subset]
+            tputs = [r.throughput_gflops for r in subset]
+            ois   = [r.oi for r in subset]
             color = BENCH_COLORS[bench]
 
-            # scatter
-            sc = ax.scatter(ois, tputs, c=color, s=80, zorder=5,
-                            edgecolors="white", linewidths=0.5)
+            # throughput: bar chart
+            ax.bar(steps, tputs, color=color, alpha=0.75, zorder=4,
+                   edgecolor="white", linewidth=0.4)
 
-            # step labels
-            for x, y, s in zip(ois, tputs, steps):
-                ax.annotate(f"S{s}", (x, y), textcoords="offset points",
-                            xytext=(5, 4), color="white", fontsize=7)
+            ax.set_xlabel("Step", color="#aaaaaa", fontsize=8)
+            ax.set_ylabel("Throughput (GFLOPS)", color=color, fontsize=8)
+            ax.tick_params(axis="y", colors=color, labelsize=7)
+            ax.tick_params(axis="x", colors="#888888", labelsize=7)
+            ax.set_xticks(steps)
 
-            # regression line
-            if len(subset) >= 2:
-                slope, intercept = regression(subset)
-                xi = np.linspace(min(ois)*0.8, max(ois)*1.2, 100)
-                yi = 10**(slope * np.log10(np.maximum(xi, 1e-9)) + intercept)
-                ax.plot(xi, yi, color=color, alpha=0.5, linewidth=1.5,
-                        linestyle="--", label=f"slope={slope:.2f}")
-                ax.legend(fontsize=7, facecolor="#0f0f1a", edgecolor="gray",
-                          labelcolor="white")
+            # OI: dotted line + dot markers on secondary y-axis
+            ax2 = ax.twinx()
+            ax2.set_facecolor("#1a1a2e")
+            oi_color = "#f0c040"
+            ax2.plot(steps, ois, color=oi_color, linewidth=1.4,
+                     linestyle=":", zorder=3)
+            ax2.scatter(steps, ois, color=oi_color, s=40, zorder=4,
+                        marker="o", edgecolors="white", linewidths=0.4)
+            ax2.set_ylabel("OI (FLOP/byte)", color=oi_color, fontsize=8)
+            ax2.tick_params(axis="y", colors=oi_color, labelsize=7)
 
             # styling
             title_color = "#ff6b6b" if prec == "Float32" and bench == "GEMM" else color
             label_suffix = " (Baseline)" if prec == "Float32" and bench == "GEMM" else ""
             ax.set_title(f"{bench} · {prec}{label_suffix}",
                          color=title_color, fontsize=9, fontweight="bold")
-            ax.set_xlabel("OI (FLOP/byte)", color="#aaaaaa", fontsize=8)
-            ax.set_ylabel("Throughput (GFLOPS)", color="#aaaaaa", fontsize=8)
-            ax.tick_params(colors="#888888", labelsize=7)
             for spine in ax.spines.values():
                 spine.set_edgecolor("#333355")
+            for spine in ax2.spines.values():
+                spine.set_edgecolor("#333355")
             ax.grid(True, color="#2a2a4a", linewidth=0.5)
+
+            # legend
+            from matplotlib.lines import Line2D
+            from matplotlib.patches import Patch
+            handles = [
+                Patch(facecolor=color, edgecolor="white", alpha=0.75, label="Throughput"),
+                Line2D([0], [0], color=oi_color, linewidth=1.4, linestyle=":", label="OI"),
+            ]
+            ax.legend(handles=handles, fontsize=7, facecolor="#0f0f1a",
+                      edgecolor="gray", labelcolor="white", loc="upper left")
 
     plt.savefig(save_path, dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
@@ -392,16 +472,20 @@ def main():
     csv_path = os.path.join(RESULTS_DIR, "benchmark_results.csv")
     save_csv(all_results, csv_path)
 
+    # Regression CSV
+    reg_csv_path = os.path.join(RESULTS_DIR, "regression_results.csv")
+    save_regression_csv(all_results, reg_csv_path)
+
     # Plot
     plot_path = os.path.join(RESULTS_DIR, "benchmark_plot.png")
     plot_results(all_results, plot_path)
 
     # Summary table
+    benchmarks = ["GEMM","Convolution","Depthwise","Elementwise","Attention"]
     print("\n" + "="*70)
     print(f"{'Benchmark':<14} {'Precision':<10} {'Steps':>5} "
           f"{'Avg OI':>8} {'Avg Tput(GFLOPS)':>16} {'Avg Lat(ms)':>12}")
     print("-"*70)
-    benchmarks = ["GEMM","Convolution","Depthwise","Elementwise","Attention"]
     for bench in benchmarks:
         for prec in ["Float32","Int8"]:
             sub = [r for r in all_results if r.benchmark==bench and r.precision==prec]
@@ -413,6 +497,26 @@ def main():
             print(f"{bench:<14} {prec:<10} {len(sub):>5} "
                   f"{avg_oi:>8.2f} {avg_tput:>16.4f} {avg_lat:>12.3f}{suffix}")
     print("="*70)
+
+    # Regression model per benchmark × precision
+    print(f"\n{'='*70}")
+    print("  OI → Throughput Regression (per benchmark × precision, log-log linear)")
+    print(f"{'='*70}")
+    for bench in benchmarks:
+        for prec in ["Float32", "Int8"]:
+            sub = [r for r in all_results if r.benchmark == bench and r.precision == prec]
+            if len(sub) < 2:
+                continue
+            slope, intercept, r2 = build_oi_regression(sub)
+            avg_oi     = float(np.mean([r.oi for r in sub]))
+            actual_avg = float(np.mean([r.throughput_gflops for r in sub]))
+            pred       = predict_throughput(avg_oi, slope, intercept)
+            err_pct    = (pred - actual_avg) / actual_avg * 100
+            print(f"\n  [{bench} · {prec}]")
+            print(f"    log10(Tput) = {slope:.4f} * log10(OI) + {intercept:.4f}  R²={r2:.4f}")
+            print(f"    Avg OI={avg_oi:.4f}  →  Pred={pred:.4f} GFLOPS  "
+                  f"Actual={actual_avg:.4f} GFLOPS  Error={err_pct:+.2f}%")
+    print(f"\n{'='*70}")
 
 if __name__ == "__main__":
     main()

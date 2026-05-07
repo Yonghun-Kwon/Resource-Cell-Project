@@ -1,7 +1,8 @@
 pytorch_env/
 rc_env/
-distributed/
+ditributed/
 results/
 coded/
+utils/
 .vscode/
 .claude/
