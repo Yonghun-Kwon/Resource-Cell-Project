@@ -6,3 +6,4 @@ coded/
 utils/
 .vscode/
 .claude/
+__pycache__/
