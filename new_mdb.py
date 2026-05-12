@@ -150,10 +150,20 @@ def load_mem_models(
 class CombinedModel:
     benchmark: str
     precision: str
-    coef_oi:   float   # a
-    coef_mem:  float   # b
-    intercept: float   # c
+    formula:   str    # "log-log" | "semi-log" | "linear" | "mixed"
+    coef_oi:   float  # a
+    coef_mem:  float  # b
+    intercept: float  # c
     r2:        float
+
+
+# 형태별 변환 규칙 (mdb.py와 동일하게 유지)
+_FORMULA_MODES: Dict[str, tuple] = {
+    "log-log":  ("log", "log", "log"),
+    "semi-log": ("log", "lin", "log"),
+    "linear":   ("lin", "lin", "lin"),
+    "mixed":    ("log", "lin", "lin"),
+}
 
 
 def load_combined_models(
@@ -166,9 +176,11 @@ def load_combined_models(
     for r in rows:
         if r["precision"] != precision:
             continue
-        bench = MDB_TO_BENCH.get(r["benchmark"], r["benchmark"])
+        bench   = MDB_TO_BENCH.get(r["benchmark"], r["benchmark"])
+        formula = r.get("formula", "log-log")   # 구버전 CSV 호환
         m = CombinedModel(
             benchmark=bench, precision=precision,
+            formula=formula,
             coef_oi=float(r["coef_oi"]),
             coef_mem=float(r["coef_mem"]),
             intercept=float(r["intercept"]),
@@ -178,7 +190,8 @@ def load_combined_models(
         warn = ""
         if abs(m.coef_oi) > 20 or abs(m.coef_mem) > 20:
             warn = "  ⚠️  계수 과대 — 다중공선성 의심, 클램프 적용됨"
-        print(f"    {bench:<12}  a={m.coef_oi:.4f}  b={m.coef_mem:.4f}  "
+        print(f"    {bench:<12}  formula={m.formula:<10}  "
+              f"a={m.coef_oi:.4f}  b={m.coef_mem:.4f}  "
               f"c={m.intercept:.4f}  R²={m.r2:.4f}{warn}")
     return models
 
@@ -203,26 +216,33 @@ def _predict_mem(mem_bytes: float, reg: RegressionModel) -> float:
 
 def _predict_combined(oi_macs: float, mem_bytes: float,
                        m: CombinedModel, bench: str) -> float:
-    """log(lat) = a·log(OI_flops) + b·log(mem) + c
-
-    클램프 범위: log_pred ∈ [-3, 6]
-      → 예측 latency 범위: 0.001 ms ~ 1,000,000 ms
-      다중공선성으로 계수가 극단적으로 피팅된 경우에도
-      10**log_pred 오버플로우를 방지.
     """
-    _LOG_MIN, _LOG_MAX = -3.0, 6.0
+    formula에 따라 분기해서 latency(ms) 예측.
 
+    formula 변환 규칙:
+      log-log  : log(lat) = a·log(OI_flops) + b·log(mem) + c
+      semi-log : log(lat) = a·log(OI_flops) + b·mem      + c
+      linear   : lat      = a·OI_flops      + b·mem      + c
+      mixed    : lat      = a·log(OI_flops) + b·mem      + c
+
+    log 출력 형태는 [-3, 6] 클램프 → 오버플로우 방지.
+    """
     factor   = FLOPS_FACTOR.get(bench, 1.0)
-    oi_flops = oi_macs * factor
-    log_pred = (m.coef_oi  * math.log10(max(oi_flops,  1e-9))
-                + m.coef_mem * math.log10(max(mem_bytes, 1e-9))
-                + m.intercept)
+    oi_flops = max(oi_macs * factor, 1e-9)
 
-    if not math.isfinite(log_pred):
-        log_pred = _LOG_MAX
-    log_pred = max(_LOG_MIN, min(log_pred, _LOG_MAX))
+    x1m, x2m, ym = _FORMULA_MODES.get(m.formula, ("log", "log", "log"))
 
-    return 10 ** log_pred  # ms
+    x1 = math.log10(oi_flops)  if x1m == "log" else oi_flops
+    x2 = math.log10(max(mem_bytes, 1e-9)) if x2m == "log" else mem_bytes
+
+    y_raw = m.coef_oi * x1 + m.coef_mem * x2 + m.intercept
+
+    if ym == "log":
+        if not math.isfinite(y_raw):
+            y_raw = 6.0
+        y_raw = max(-3.0, min(y_raw, 6.0))
+        return 10 ** y_raw
+    return max(y_raw, 1e-9)
 
 
 # ─────────────────────────────────────────────
@@ -249,6 +269,7 @@ class LayerPrediction:
     pred_combined_ms:  float
     err_combined_pct:  float
     r2_combined:       float
+    formula:           str     # 선택된 회귀 형태
 
 
 # ─────────────────────────────────────────────
@@ -298,7 +319,9 @@ def predict_model_latency(
             actual_lat_ms=p.latency_ms,
             pred_oi_ms=pred_oi,     err_oi_pct=_err(pred_oi,   p.latency_ms), r2_oi=oi_reg.r2,
             pred_mem_ms=pred_mem,   err_mem_pct=_err(pred_mem,  p.latency_ms), r2_mem=mem_reg.r2,
-            pred_combined_ms=pred_comb, err_combined_pct=_err(pred_comb, p.latency_ms), r2_combined=comb_reg.r2,
+            pred_combined_ms=pred_comb, err_combined_pct=_err(pred_comb, p.latency_ms),
+            r2_combined=comb_reg.r2,
+            formula=comb_reg.formula,
         ))
 
     return results
@@ -322,7 +345,6 @@ def print_predictions(results: List[LayerPrediction]):
               f"{p.pred_mem_ms:>9.4f} {p.err_mem_pct:>+9.2f}% "
               f"{p.pred_combined_ms:>10.4f} {p.err_combined_pct:>+10.2f}%")
     print("=" * W)
-
     total_actual = sum(p.actual_lat_ms     for p in results)
     total_oi     = sum(p.pred_oi_ms        for p in results)
     total_mem    = sum(p.pred_mem_ms       for p in results)
@@ -332,6 +354,11 @@ def print_predictions(results: List[LayerPrediction]):
     print(f"  Σ OI-Pred   : {total_oi:.4f} ms  (error: {_e(total_oi):+.2f}%)")
     print(f"  Σ Mem-Pred  : {total_mem:.4f} ms  (error: {_e(total_mem):+.2f}%)")
     print(f"  Σ Comb-Pred : {total_comb:.4f} ms  (error: {_e(total_comb):+.2f}%)")
+
+    # 선택된 formula 분포
+    from collections import Counter
+    formula_dist = Counter(p.formula for p in results)
+    print(f"  Formula 분포: { {k: v for k, v in formula_dist.items()} }")
     print("=" * W)
 
     # bench-type별 요약
