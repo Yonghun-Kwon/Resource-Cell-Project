@@ -52,7 +52,7 @@ def op_to_bench(profile: OpProfile) -> Optional[str]:
         return "Depthwise" if "(DW)" in profile.param_desc else "Convolution"
     if t == "MultiheadAttention":
         return "Attention"
-    if t in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU",
+    if t in ("ReLU", "ReLU6", "GELU", "Sigmoid", "Tanh", "SiLU",
              "Hardswish", "LeakyReLU", "ELU",
              "BatchNorm2d", "LayerNorm", "MaxPool2d", "AvgPool2d"):
         return "Elementwise"
@@ -404,9 +404,72 @@ if __name__ == "__main__":
                       nn.Linear, nn.MaxPool2d, nn.AvgPool2d],
         precision  = "Float32",
     )
-
     print_predictions(results)
     save_predictions_csv(
         results,
         os.path.join(RESULTS_DIR, "resnet50_latency_prediction.csv"),
+    )
+
+    # ─────────────────────────────────────────────────────────────────
+    # MobileNetV2
+    # ─────────────────────────────────────────────────────────────────
+    print("\n\n" + "█" * 60)
+    print("  MobileNetV2")
+    print("█" * 60)
+    mob = tvm.mobilenet_v2(weights=None)
+    mob.eval()
+
+    mob_results = predict_model_latency(
+        model      = mob,
+        inputs     = [x],
+        target_ops = [nn.Conv2d, nn.BatchNorm2d, nn.ReLU6, nn.Linear],
+        precision  = "Float32",
+    )
+    print_predictions(mob_results)
+    save_predictions_csv(
+        mob_results,
+        os.path.join(RESULTS_DIR, "mobilenetv2_latency_prediction.csv"),
+    )
+
+    # ─────────────────────────────────────────────────────────────────
+    # ViT-B/16
+    # ─────────────────────────────────────────────────────────────────
+    print("\n\n" + "█" * 60)
+    print("  ViT-B/16")
+    print("█" * 60)
+    vit = tvm.vit_b_16(weights=None)
+    vit.eval()
+
+    vit_results = predict_model_latency(
+        model      = vit,
+        inputs     = [x],
+        target_ops = [nn.MultiheadAttention, nn.LayerNorm, nn.Linear,
+                      nn.GELU, nn.Conv2d],
+        precision  = "Float32",
+    )
+    print_predictions(vit_results)
+    save_predictions_csv(
+        vit_results,
+        os.path.join(RESULTS_DIR, "vit_b16_latency_prediction.csv"),
+    )
+
+    # ─────────────────────────────────────────────────────────────────
+    # EfficientNet-B0
+    # ─────────────────────────────────────────────────────────────────
+    print("\n\n" + "█" * 60)
+    print("  EfficientNet-B0")
+    print("█" * 60)
+    eff = tvm.efficientnet_b0(weights=None)
+    eff.eval()
+
+    eff_results = predict_model_latency(
+        model      = eff,
+        inputs     = [x],
+        target_ops = [nn.Conv2d, nn.BatchNorm2d, nn.SiLU, nn.Linear],
+        precision  = "Float32",
+    )
+    print_predictions(eff_results)
+    save_predictions_csv(
+        eff_results,
+        os.path.join(RESULTS_DIR, "efficientnet_b0_latency_prediction.csv"),
     )

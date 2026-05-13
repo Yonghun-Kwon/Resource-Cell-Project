@@ -114,7 +114,7 @@ def _count_ew(m, inp, out):
     n = inp[0].numel()
     return float(n), float(3 * n * 4), f"N={n}"
 
-for _cls in (nn.ReLU, nn.GELU, nn.Sigmoid, nn.Tanh, nn.SiLU,
+for _cls in (nn.ReLU, nn.ReLU6, nn.GELU, nn.Sigmoid, nn.Tanh, nn.SiLU,
              nn.Hardswish, nn.LeakyReLU, nn.ELU):
     _COUNTERS[_cls] = _count_ew
 
@@ -329,3 +329,87 @@ if __name__ == "__main__":
     p3.profile(model, x)
     p3.summary()
     p3.save_csv(os.path.join(RESULTS_DIR, "resnet50_all.csv"))
+
+    # ─────────────────────────────────────────────────────────────────
+    # MobileNetV2 profiling
+    # ─────────────────────────────────────────────────────────────────
+    mob = tvm.mobilenet_v2(weights=None)
+    mob.eval()
+
+    print("\n" + "=" * 60)
+    print("  MobileNetV2 — Conv2d (incl. DW) / BatchNorm2d / ReLU6")
+    print("=" * 60)
+    p4 = ModelProfiler(
+        target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.ReLU6],
+        warmup=3, runs=10,
+    )
+    p4.profile(mob, x)
+    p4.summary()
+    p4.save_csv(os.path.join(RESULTS_DIR, "mobilenetv2_conv_bn_relu6.csv"))
+
+    print("\n" + "=" * 60)
+    print("  MobileNetV2 — All registered ops")
+    print("=" * 60)
+    p5 = ModelProfiler(
+        target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.ReLU6, nn.Linear],
+        warmup=3, runs=10,
+    )
+    p5.profile(mob, x)
+    p5.summary()
+    p5.save_csv(os.path.join(RESULTS_DIR, "mobilenetv2_all.csv"))
+
+    # ─────────────────────────────────────────────────────────────────
+    # ViT-B/16 profiling
+    # ─────────────────────────────────────────────────────────────────
+    vit = tvm.vit_b_16(weights=None)
+    vit.eval()
+
+    print("\n" + "=" * 60)
+    print("  ViT-B/16 — MultiheadAttention / LayerNorm")
+    print("=" * 60)
+    p6 = ModelProfiler(
+        target_ops=[nn.MultiheadAttention, nn.LayerNorm],
+        warmup=3, runs=10,
+    )
+    p6.profile(vit, x)
+    p6.summary()
+    p6.save_csv(os.path.join(RESULTS_DIR, "vit_b16_attn_ln.csv"))
+
+    print("\n" + "=" * 60)
+    print("  ViT-B/16 — All registered ops")
+    print("=" * 60)
+    p7 = ModelProfiler(
+        target_ops=[nn.MultiheadAttention, nn.LayerNorm, nn.Linear, nn.GELU, nn.Conv2d],
+        warmup=3, runs=10,
+    )
+    p7.profile(vit, x)
+    p7.summary()
+    p7.save_csv(os.path.join(RESULTS_DIR, "vit_b16_all.csv"))
+
+    # ─────────────────────────────────────────────────────────────────
+    # EfficientNet-B0 profiling
+    # ─────────────────────────────────────────────────────────────────
+    eff = tvm.efficientnet_b0(weights=None)
+    eff.eval()
+
+    print("\n" + "=" * 60)
+    print("  EfficientNet-B0 — Conv2d / BatchNorm2d / SiLU")
+    print("=" * 60)
+    p8 = ModelProfiler(
+        target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.SiLU],
+        warmup=3, runs=10,
+    )
+    p8.profile(eff, x)
+    p8.summary()
+    p8.save_csv(os.path.join(RESULTS_DIR, "efficientnet_b0_conv_bn_silu.csv"))
+
+    print("\n" + "=" * 60)
+    print("  EfficientNet-B0 — All registered ops")
+    print("=" * 60)
+    p9 = ModelProfiler(
+        target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.SiLU, nn.Linear],
+        warmup=3, runs=10,
+    )
+    p9.profile(eff, x)
+    p9.summary()
+    p9.save_csv(os.path.join(RESULTS_DIR, "efficientnet_b0_all.csv"))
