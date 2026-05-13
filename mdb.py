@@ -14,6 +14,7 @@ import time
 import csv
 import os
 import math
+import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 import matplotlib.pyplot as plt
@@ -28,8 +29,8 @@ except ImportError:
 # ─────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────
-WARMUP_RUNS = 5
-MEASURE_RUNS = 30
+WARMUP_RUNS = 10
+MEASURE_RUNS = 50
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -631,17 +632,22 @@ def predict_throughput(oi: float, slope: float, intercept: float) -> float:
 # ─────────────────────────────────────────────
 # Combined Regression: (OI, mem_bytes) → latency_ms
 # ─────────────────────────────────────────────
-def build_combined_regression(results: List[BenchResult], ridge_lambda: float = 1e-2):
+def _extract_T(param_desc: str) -> float:
+    m = re.search(r'T=(\d+)', param_desc)
+    return float(m.group(1)) if m else 1.0
+
+
+def build_combined_regression(results: List[BenchResult], ridge_lambda: float = 1e-3,
+                               extra_log: np.ndarray = None):
     """
-    log(lat) = a·log(OI) + b·log(mem) + c  를 Ridge 회귀로 피팅.
+    기본: log(lat) = a·log(OI) + b·log(mem) + c
+    extra_log 지정 시: log(lat) = a·log(OI) + b·log(mem) + c_T·extra_log + c
+      → Attention은 extra_log=log10(T)를 전달해 T² 스케일링을 피처로 추가.
 
-    Ridge 정규화 이유:
-      log(OI)와 log(mem)은 같은 파라미터(n, C 등)에서 파생되어 강하게
-      상관되는 경우가 많음 (다중공선성). 일반 lstsq는 이 경우 계수가
-      극단적으로 커져 새 입력에서 10**log_pred 폭발을 일으킴.
-      Ridge는 ||coeff||² 패널티로 계수를 억제해 일반화 성능 향상.
+    항상 (a, b, c_T, c, r2) 5개를 반환.
+    extra_log 없으면 c_T=0.0.
 
-    ridge_lambda: 정규화 강도 (기본 1e-2, intercept 항은 정규화 제외)
+    ridge_lambda: 정규화 강도 (기본 1e-3, intercept 항은 정규화 제외)
     """
     ois  = np.array([r.oi         for r in results])
     mems = np.array([r.mem_bytes  for r in results])
@@ -650,25 +656,36 @@ def build_combined_regression(results: List[BenchResult], ridge_lambda: float = 
     log_mem = np.log10(np.maximum(mems, 1e-9))
     log_lat = np.log10(np.maximum(lats, 1e-9))
 
-    X = np.column_stack([log_oi, log_mem, np.ones(len(results))])
+    if extra_log is not None:
+        X        = np.column_stack([log_oi, log_mem, extra_log, np.ones(len(results))])
+        lam_diag = np.array([ridge_lambda, ridge_lambda, ridge_lambda, 0.0])
+    else:
+        X        = np.column_stack([log_oi, log_mem, np.ones(len(results))])
+        lam_diag = np.array([ridge_lambda, ridge_lambda, 0.0])
 
-    # Ridge: (XᵀX + λI')⁻¹ Xᵀy  —  intercept 항(마지막 열)은 정규화 제외
-    lam_diag = np.array([ridge_lambda, ridge_lambda, 0.0])
-    XtX = X.T @ X + np.diag(lam_diag)
+    XtX    = X.T @ X + np.diag(lam_diag)
     coeffs = np.linalg.solve(XtX, X.T @ log_lat)
-    a, b, c = coeffs
 
     log_pred = X @ coeffs
     ss_res = np.sum((log_lat - log_pred) ** 2)
     ss_tot = np.sum((log_lat - log_lat.mean()) ** 2)
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-    return float(a), float(b), float(c), float(r2)
+
+    if extra_log is not None:
+        a, b, c_T, c = coeffs
+    else:
+        a, b, c = coeffs
+        c_T = 0.0
+    return float(a), float(b), float(c_T), float(c), float(r2)
+
 
 def predict_latency_combined(oi: float, mem_bytes: float,
-                              a: float, b: float, c: float) -> float:
-    log_pred = (a * math.log10(max(oi, 1e-9))
-                + b * math.log10(max(mem_bytes, 1e-9))
-                + c)
+                              a: float, b: float, c_T: float, c: float,
+                              extra_val: float = 1.0) -> float:
+    log_pred = (a * math.log10(max(oi,        1e-9))
+              + b * math.log10(max(mem_bytes,  1e-9))
+              + c_T * math.log10(max(extra_val, 1e-9))
+              + c)
     return 10 ** log_pred
 
 
@@ -680,9 +697,14 @@ def save_combined_regression_csv(all_results: List[BenchResult], path: str):
             sub = [r for r in all_results if r.benchmark == bench and r.precision == prec]
             if len(sub) < 3:
                 continue
-            a, b, c, r2 = build_combined_regression(sub)
+            is_attn  = bench == "Attn_GELU"
+            extra_log = (np.log10([_extract_T(r.param_desc) for r in sub])
+                         if is_attn else None)
+            a, b, c_T, c, r2 = build_combined_regression(sub, extra_log=extra_log)
             # 각 스텝별 예측 → RMSE / MAPE 로 검증 (평균 단일 점 오류 수정)
-            preds   = [predict_latency_combined(r.oi, r.mem_bytes, a, b, c) for r in sub]
+            preds   = [predict_latency_combined(r.oi, r.mem_bytes, a, b, c_T, c,
+                                                extra_val=_extract_T(r.param_desc) if is_attn else 1.0)
+                       for r in sub]
             actuals = [r.latency_ms for r in sub]
             rmse    = float(np.sqrt(np.mean([(p - ac) ** 2 for p, ac in zip(preds, actuals)])))
             mape    = float(np.mean([abs(p - ac) / max(ac, 1e-9) * 100 for p, ac in zip(preds, actuals)]))
@@ -694,6 +716,7 @@ def save_combined_regression_csv(all_results: List[BenchResult], path: str):
                 "precision":     prec,
                 "coef_oi":       round(a, 6),
                 "coef_mem":      round(b, 6),
+                "coef_T":        round(c_T, 6),
                 "intercept":     round(c, 6),
                 "r2":            round(r2, 6),
                 "avg_oi":        round(avg_oi, 6),
@@ -923,25 +946,30 @@ def main():
     print(f"\n{'='*70}")
 
     # Combined regression summary
-    print(f"\n{'='*78}")
-    print("  Combined Regression: log(lat) = a·log(OI) + b·log(mem) + c")
-    print(f"{'='*78}")
+    print(f"\n{'='*88}")
+    print("  Combined Regression  (Attn: +log(T) 피처 추가)")
+    print(f"{'='*88}")
     print(f"  {'Benchmark':<14} {'Prec':<8} {'coef_OI':>9} {'coef_mem':>10} "
-          f"{'intercept':>10} {'R²':>7} {'RMSE(ms)':>10} {'MAPE%':>8}")
-    print(f"  {'-'*76}")
+          f"{'coef_T':>8} {'intercept':>10} {'R²':>7} {'RMSE(ms)':>10} {'MAPE%':>8}")
+    print(f"  {'-'*86}")
     for bench in benchmarks:
         for prec in ["Float32", "Int8"]:
             sub = [r for r in all_results if r.benchmark == bench and r.precision == prec]
             if len(sub) < 3:
                 continue
-            a, b, c, r2 = build_combined_regression(sub)
-            preds   = [predict_latency_combined(r.oi, r.mem_bytes, a, b, c) for r in sub]
+            is_attn   = bench == "Attn_GELU"
+            extra_log = (np.log10([_extract_T(r.param_desc) for r in sub])
+                         if is_attn else None)
+            a, b, c_T, c, r2 = build_combined_regression(sub, extra_log=extra_log)
+            preds   = [predict_latency_combined(r.oi, r.mem_bytes, a, b, c_T, c,
+                                                extra_val=_extract_T(r.param_desc) if is_attn else 1.0)
+                       for r in sub]
             actuals = [r.latency_ms for r in sub]
             rmse    = float(np.sqrt(np.mean([(p - ac) ** 2 for p, ac in zip(preds, actuals)])))
             mape    = float(np.mean([abs(p - ac) / max(ac, 1e-9) * 100 for p, ac in zip(preds, actuals)]))
             print(f"  {bench:<14} {prec:<8} {a:>9.4f} {b:>10.4f} "
-                  f"{c:>10.4f} {r2:>7.4f} {rmse:>10.4f} {mape:>8.2f}%")
-    print(f"  {'='*76}")
+                  f"{c_T:>8.4f} {c:>10.4f} {r2:>7.4f} {rmse:>10.4f} {mape:>8.2f}%")
+    print(f"  {'='*86}")
 
     # ── 평균 OI에서의 추론 성능 요약 ─────────────────────────────
     print(f"\n{'='*88}")
@@ -962,7 +990,7 @@ def main():
             avg_flops   = float(np.mean([r.flops              for r in sub]))
 
             pred_tput = predict_throughput(avg_oi, slope, intercept)
-            pred_lat  = (avg_flops / 1e9) / pred_tput if pred_tput > 1e-9 else float("inf")
+            pred_lat  = (avg_flops / 1e9) / pred_tput * 1000 if pred_tput > 1e-9 else float("inf")
             err_pct   = (pred_tput - actual_tput) / actual_tput * 100 if actual_tput > 0 else 0.0
 
             print(f"  {bench:<14} {prec:<8} {avg_oi:>8.2f} "
