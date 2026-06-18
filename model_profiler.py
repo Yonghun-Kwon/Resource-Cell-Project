@@ -361,55 +361,55 @@ if __name__ == "__main__":
     # ─────────────────────────────────────────────────────────────────
     # ViT-B/16 profiling
     # ─────────────────────────────────────────────────────────────────
-    vit = tvm.vit_b_16(weights=None)
-    vit.eval()
+    # vit = tvm.vit_b_16(weights=None)
+    # vit.eval()
 
-    print("\n" + "=" * 60)
-    print("  ViT-B/16 — MultiheadAttention / LayerNorm")
-    print("=" * 60)
-    p6 = ModelProfiler(
-        target_ops=[nn.MultiheadAttention, nn.LayerNorm],
-        warmup=3, runs=10,
-    )
-    p6.profile(vit, x)
-    p6.summary()
-    p6.save_csv(os.path.join(RESULTS_DIR, "vit_b16_attn_ln.csv"))
+    # print("\n" + "=" * 60)
+    # print("  ViT-B/16 — MultiheadAttention / LayerNorm")
+    # print("=" * 60)
+    # p6 = ModelProfiler(
+    #     target_ops=[nn.MultiheadAttention, nn.LayerNorm],
+    #     warmup=3, runs=10,
+    # )
+    # p6.profile(vit, x)
+    # p6.summary()
+    # p6.save_csv(os.path.join(RESULTS_DIR, "vit_b16_attn_ln.csv"))
 
-    print("\n" + "=" * 60)
-    print("  ViT-B/16 — All registered ops")
-    print("=" * 60)
-    p7 = ModelProfiler(
-        target_ops=[nn.MultiheadAttention, nn.LayerNorm, nn.Linear, nn.GELU, nn.Conv2d],
-        warmup=3, runs=10,
-    )
-    p7.profile(vit, x)
-    p7.summary()
-    p7.save_csv(os.path.join(RESULTS_DIR, "vit_b16_all.csv"))
+    # print("\n" + "=" * 60)
+    # print("  ViT-B/16 — All registered ops")
+    # print("=" * 60)
+    # p7 = ModelProfiler(
+    #     target_ops=[nn.MultiheadAttention, nn.LayerNorm, nn.Linear, nn.GELU, nn.Conv2d],
+    #     warmup=3, runs=10,
+    # )
+    # p7.profile(vit, x)
+    # p7.summary()
+    # p7.save_csv(os.path.join(RESULTS_DIR, "vit_b16_all.csv"))
 
     # ─────────────────────────────────────────────────────────────────
     # EfficientNet-B0 profiling
     # ─────────────────────────────────────────────────────────────────
-    eff = tvm.efficientnet_b0(weights=None)
-    eff.eval()
+    # eff = tvm.efficientnet_b0(weights=None)
+    # eff.eval()
 
-    print("\n" + "=" * 60)
-    print("  EfficientNet-B0 — Conv2d / BatchNorm2d / SiLU")
-    print("=" * 60)
-    p8 = ModelProfiler(
-        target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.SiLU],
-        warmup=3, runs=10,
-    )
-    p8.profile(eff, x)
-    p8.summary()
-    p8.save_csv(os.path.join(RESULTS_DIR, "efficientnet_b0_conv_bn_silu.csv"))
+    # print("\n" + "=" * 60)
+    # print("  EfficientNet-B0 — Conv2d / BatchNorm2d / SiLU")
+    # print("=" * 60)
+    # p8 = ModelProfiler(
+    #     target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.SiLU],
+    #     warmup=3, runs=10,
+    # )
+    # p8.profile(eff, x)
+    # p8.summary()
+    # p8.save_csv(os.path.join(RESULTS_DIR, "efficientnet_b0_conv_bn_silu.csv"))
 
-    print("\n" + "=" * 60)
-    print("  EfficientNet-B0 — All registered ops")
-    print("=" * 60)
-    p9 = ModelProfiler(
-        target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.SiLU, nn.Linear],
-        warmup=3, runs=10,
-    )
-    p9.profile(eff, x)
-    p9.summary()
-    p9.save_csv(os.path.join(RESULTS_DIR, "efficientnet_b0_all.csv"))
+    # print("\n" + "=" * 60)
+    # print("  EfficientNet-B0 — All registered ops")
+    # print("=" * 60)
+    # p9 = ModelProfiler(
+    #     target_ops=[nn.Conv2d, nn.BatchNorm2d, nn.SiLU, nn.Linear],
+    #     warmup=3, runs=10,
+    # )
+    # p9.profile(eff, x)
+    # p9.summary()
+    # p9.save_csv(os.path.join(RESULTS_DIR, "efficientnet_b0_all.csv"))
