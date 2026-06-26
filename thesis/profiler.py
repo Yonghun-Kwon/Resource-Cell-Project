@@ -13,8 +13,6 @@ from torch.profiler import profile, record_function, ProfilerActivity
 import torchvision.models as models
 
 # ========================== 사용자 스위치 ==========================
-USE_MINI_LM = False   # ← True: 초경량 트랜스포머 LM 사용, False: ResNet-50
-SEQ_LEN = 128
 DEVICE = "cpu"
 NUM_RUNS = 10
 # ================================================================
@@ -23,84 +21,6 @@ ATTN_FLOP_MODE = "full"          # "full" | "projections" | "core"
 ATTN_INCLUDE_SOFTMAX = True
 ATTN_INCLUDE_LAYERNORM = False
 ATTN_FLOP_SCALE = 1.0
-
-# =========================================================
-# (Mini) 초경량 트랜스포머 언어모델
-# =========================================================
-class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, d_model=128, n_head=2, attn_dropout=0.0, resid_dropout=0.0):
-        super().__init__()
-        assert d_model % n_head == 0
-        self.d_model = d_model
-        self.n_head = n_head
-        self.head_dim = d_model // n_head
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.o_proj = nn.Linear(d_model, d_model, bias=False)
-        self.attn_drop = nn.Dropout(attn_dropout)
-        self.resid_drop = nn.Dropout(resid_dropout)
-
-    def forward(self, x):
-        B, T, C = x.shape
-        H, Dh = self.n_head, self.head_dim
-        q = self.q_proj(x).view(B, T, H, Dh).transpose(1, 2).contiguous()
-        k = self.k_proj(x).view(B, T, H, Dh).transpose(1, 2).contiguous()
-        v = self.v_proj(x).view(B, T, H, Dh).transpose(1, 2).contiguous()
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(Dh)
-        mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
-        att = att.masked_fill(mask, float('-inf'))
-        att = torch.softmax(att, dim=-1)
-        att = self.attn_drop(att)
-        y = att @ v
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
-        return self.resid_drop(self.o_proj(y))
-
-class TransformerBlock(nn.Module):
-    def __init__(self, d_model=128, n_head=2, mlp_ratio=4, dropout=0.0):
-        super().__init__()
-        self.ln1 = nn.LayerNorm(d_model)
-        self.attn = MultiHeadSelfAttention(d_model=d_model, n_head=n_head,
-                                           attn_dropout=dropout, resid_dropout=dropout)
-        self.ln2 = nn.LayerNorm(d_model)
-        hidden = d_model * mlp_ratio
-        self.mlp = nn.Sequential(
-            nn.Linear(d_model, hidden, bias=False),
-            nn.GELU(),
-            nn.Linear(hidden, d_model, bias=False),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
-        return x
-
-class MiniTransformerLM(nn.Module):
-    def __init__(self, vocab_size=320, seq_len=128, d_model=128,
-                 n_head=2, n_layer=2, dropout=0.0):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.seq_len = seq_len
-        self.tok_emb = nn.Embedding(vocab_size, d_model)
-        self.pos_emb = nn.Parameter(torch.zeros(1, seq_len, d_model))
-        self.drop = nn.Dropout(dropout)
-        self.blocks = nn.ModuleList([
-            TransformerBlock(d_model=d_model, n_head=n_head, mlp_ratio=4, dropout=dropout)
-            for _ in range(n_layer)
-        ])
-        self.ln_f = nn.LayerNorm(d_model)
-        self.head = nn.Linear(d_model, vocab_size, bias=False)
-        nn.init.normal_(self.pos_emb, std=0.02)
-
-    def forward(self, input_ids):
-        B, T = input_ids.shape
-        assert T <= self.seq_len, "seq_len 초과"
-        x = self.tok_emb(input_ids) + self.pos_emb[:, :T, :]
-        x = self.drop(x)
-        for blk in self.blocks:
-            x = blk(x)
-        return self.head(self.ln_f(x))
 
 # =========================================================
 # (공통) Attention 감지 / 파라미터 추출 / FLOPs·Bytes
@@ -403,8 +323,8 @@ REG_THROUGHPUT_OI_LINEAR = {
     }
 }
 
-GLOBAL_OI_CAP = 50.0
-OI_CAPS = {"gemm": 80.0, "conv": 40.0, "depthwise": 3.0, "nonlinear": 50.0, "attention": 50.0}
+GLOBAL_OI_CAP = 80.0
+OI_CAPS = {"gemm": 80.0, "conv": 50.0, "depthwise": 3.0, "nonlinear": 50.0, "attention": 50.0}
 STATIC_THR_FLOOR_GLOBAL = 0.20
 STATIC_THR_FLOOR_BY_OP  = {"nonlinear": 0.50, "depthwise": 0.2, "conv": 0.20, "gemm": 1.00, "attention": 1.00}
 STATIC_THR_CEIL_BY_OP   = {}
@@ -527,20 +447,14 @@ USE_VISION_TRANSFORMER = False
 USE_SWINT = False
 
 if __name__ == "__main__":
-    if USE_MINI_LM:
-        model = MiniTransformerLM(
-            vocab_size=320, seq_len=SEQ_LEN, d_model=128,
-            n_head=2, n_layer=2, dropout=0.0
-        ).to(DEVICE).eval()
-        x = torch.randint(0, 320, (1, SEQ_LEN), device=DEVICE)
-    elif USE_VISION_TRANSFORMER:
+    if USE_VISION_TRANSFORMER:
         if USE_SWINT:
             model = swin_v2_t(weights=Swin_V2_T_Weights.IMAGENET1K_V1).to(DEVICE).eval()
         else:
             model = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1).to(DEVICE).eval()
         x = torch.randn(1, 3, 224, 224, device=DEVICE)
     else:
-        model = models.efficientnet_b0().to(DEVICE).eval()
+        model = models.resnet50().to(DEVICE).eval()
         x = torch.randn(1, 3, 224, 224, device=DEVICE)
 
     total_flops, measured_ms, per_op_meas = analyze_model_operations(model, x, num_runs=NUM_RUNS)

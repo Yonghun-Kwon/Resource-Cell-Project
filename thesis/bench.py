@@ -134,6 +134,7 @@ def bench_conv_block(B,Cin,Cout,H,W,K=3,runs=RUNS,device=DEVICE):
             out_ch = max(1, int(Cout))
             layers += [
                 nn.Conv2d(in_ch, out_ch, K, padding=1, bias=False),
+                nn.BatchNorm2d(out_ch),
                 nn.ReLU(inplace=True)
             ]
             in_ch = out_ch
